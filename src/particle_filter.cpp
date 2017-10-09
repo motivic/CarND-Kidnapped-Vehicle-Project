@@ -43,6 +43,7 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
 		weights.push_back(1.0/num_particles);
 	}
 	is_initialized = true;
+
 }
 
 void ParticleFilter::prediction(double delta_t, double std_pos[], double velocity, double yaw_rate) {
@@ -58,26 +59,29 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
 		double y = particles[i].y;
 		double theta = particles[i].theta;
 
-		if (yaw_rate > 0.001) {
-			double x_new = x+velocity/yaw_rate*(sin(theta+yaw_rate*delta_t)-sin(theta));
-			double y_new = y+velocity/yaw_rate*(cos(theta)-cos(theta+yaw_rate*delta_t));
-			double theta_new = theta+yaw_rate*delta_t;
+		double x_new;
+		double y_new;
+		double theta_new;
+
+		if (fabs(yaw_rate) > 0.0001) {
+			x_new = x+velocity/yaw_rate*(sin(theta+yaw_rate*delta_t)-sin(theta));
+			y_new = y+velocity/yaw_rate*(cos(theta)-cos(theta+yaw_rate*delta_t));
+			theta_new = theta+yaw_rate*delta_t;
 		}
 		else {
-			double x_new = x+velocity*delta_t*cos(theta);
-			double y_new = y+velocity*delta_t*sin(theta);
-			double theta_new = theta;
+			x_new = x+velocity*delta_t*cos(theta);
+			y_new = y+velocity*delta_t*sin(theta);
+			theta_new = theta;
 		}
 
-		normal_distribution<double> dist_x(x_new, std[0]);
-		normal_distribution<double> dist_y(y_new, std[1]);
-		normal_distribution<double> dist_theta(theta_new, std[2]);
+		normal_distribution<double> dist_x(x_new, std_pos[0]);
+		normal_distribution<double> dist_y(y_new, std_pos[1]);
+		normal_distribution<double> dist_theta(theta_new, std_pos[2]);
 
 		particles[i].x = dist_x(gen);
 		particles[i].y = dist_y(gen);
 		particles[i].theta = dist_theta(gen);
 	}
-
 }
 
 Particle ParticleFilter::dataAssociation(Particle particle,
@@ -90,7 +94,7 @@ Particle ParticleFilter::dataAssociation(Particle particle,
 
 	// Make sure the predicted nor observations is not empty
 	if (predicted.size() == 0 || observations.size() == 0)
-		return;
+		return particle;
 
 	// Find the nearest landmark for each observation
 	vector<int> associations;
@@ -98,24 +102,23 @@ Particle ParticleFilter::dataAssociation(Particle particle,
 	vector<double> sense_y;
 
 	for (auto& it : predicted) {
+		associations.push_back(it.id);
+
 		double min_x = observations[0].x;
 		double min_y = observations[0].y;
-		double min_id = observation[0].id;
-		double min_dist = dist(min_x, it.x, min_y, it.y);
+		double min_dist = dist(min_x, min_y, it.x, it.y);
 
 		for (unsigned int j=1; j<observations.size(); ++j) {
-			double new_dist = dist(observation[j].x, it.x, observations[j].y, it.y);
+			double new_dist = dist(observations[j].x, observations[j].y, it.x, it.y);
 			if (new_dist < min_dist) {
+				min_dist = new_dist;
 				min_x = observations[j].x;
 				min_y = observations[j].y;
-				min_id = observations[j].id;
-				min_dist = new_dist
 			}
 		}
 
-		associations.append(min_id);
-		sense_x.append(min_x);
-		sense_y.append(min_y);
+		sense_x.push_back(min_x);
+		sense_y.push_back(min_y);
 	}
 
 	return SetAssociations(particle, associations, sense_x, sense_y);
@@ -133,11 +136,10 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 	//   and the following is a good resource for the actual equation to implement (look at equation 
 	//   3.33
 	//   http://planning.cs.uiuc.edu/node99.html
-	double std_x = landmark_std[0];
-	double std_y = landmark_std[1];
+	double std_x = std_landmark[0];
+	double std_y = std_landmark[1];
 
-	double total_weight = 0;
-
+	double total_weight = 0.0;
 	for (unsigned int i=0; i<num_particles; ++i) {
 		double x = particles[i].x;
 		double y = particles[i].y;
@@ -145,31 +147,36 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 
 		// Find all map landmarks that are within sensor_range
 		vector<LandmarkObs> predicted_landmarks;
-		for (auto& it : map_landmarks) {
-			double distance = dist(x, it.x, y, it.y);
-			if (distance <= sensor_range)
-				predicted_landmarks.push_back(it);
+		LandmarkObs landmark_map;
+		for (auto& it : map_landmarks.landmark_list) {
+			double distance = dist(x, y, it.x_f, it.y_f);
+			if (distance <= sensor_range) {
+				landmark_map.id = it.id_i;	
+				landmark_map.x = it.x_f;
+				landmark_map.y = it.y_f;
+				predicted_landmarks.push_back(landmark_map);
+			}
 		}
 
 		// Skip over if there are no landmarks in range
 		if (predicted_landmarks.size() == 0) {
-			total_weight += particles[i].weight;
+			total_weight += weights[i];
 			continue;
 		}
 
 		// Skip over if the number of observed landmarks is less than 
 		// the number of map landmarks within sensor's range
 		if (observations.size() < predicted_landmarks.size()) {
-			total_weight += particles[i].weight;
+			total_weight += weights[i];
 			continue;
 		}
 
 		// Transform observations from VEHICLE's coordinate system into the MAP's coordinate system
 		vector<LandmarkObs> observations_map;
+		LandmarkObs obs_map;
 		for (auto& it : observations) {
 			double x_obs = it.x;
 			double y_obs = it.y;
-			LandmarkObs obs_map;
 
 			obs_map.x = cos(theta)*x_obs-sin(theta)*y_obs+x;
 			obs_map.y = sin(theta)*x_obs+cos(theta)*y_obs+y;
@@ -181,23 +188,33 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 		particles[i] = dataAssociation(particles[i], predicted_landmarks, observations_map);
 
 		// Calculate weight for this particle
-		double weight = 1.0;
-		double denom = 2.0*M_PI*std_x*std_y;
+		// In order to prevent arithmetic underflow, we convert the product to a sum of logarithms and exponentiate
+		double log_weight = 0.0;
+		double log_denom = log(2.0*M_PI*std_x*std_y);
 		for (unsigned int j=0; j<predicted_landmarks.size(); ++j) {
 			double x_diff = predicted_landmarks[j].x-particles[i].sense_x[j];
 			double y_diff = predicted_landmarks[j].y-particles[i].sense_y[j];
 			double exponent = -x_diff*x_diff/(2*std_x*std_x)-y_diff*y_diff/(2*std_y*std_y);
-			weight *= exp(exponent)/denom;
+			log_weight += exponent-log_denom;
 		}
-		particles[i].weight = weight;
-		weights[i] = weight;
-		total_weight += weight;
+		particles[i].weight = exp(log_weight);
+		weights[i] = exp(log_weight);
+		total_weight += exp(log_weight);
 	}
 
 	// Normalize the weights
-	for (unsigned int i=0; i<num_particles; ++i) {
-		particles[i].weight /= total_weight;
-		weights[i] /= total_weight;
+	if (total_weight > 0.0001) {
+		for (unsigned int i=0; i<num_particles; ++i) {
+			particles[i].weight /= total_weight;
+			weights[i] /= total_weight;
+		}
+	}
+	else {
+		// If total weight is too small, re-initialize the filter
+		for (unsigned int i=0; i<num_particles; ++i) {
+			particles[i].weight = 1.0/num_particles;
+			weights[i] = 1.0/num_particles;
+		}
 	}
 }
 
@@ -209,9 +226,16 @@ void ParticleFilter::resample() {
 	discrete_distribution<int> resampler (weights.begin(), weights.end());
 
 	vector<Particle> new_particles;
+	double total_weight = 0.0;
 	for (unsigned int i=0; i<num_particles; ++i) {
 		int idx = resampler(gen);
+		total_weight += particles[idx].weight;
 		new_particles.push_back(particles[idx]);
+	}
+
+	for (unsigned int i=0; i<num_particles; ++i) {
+		new_particles[i].weight /= total_weight;
+		weights[i] = new_particles[i].weight;
 	}
 
 	particles = new_particles;
