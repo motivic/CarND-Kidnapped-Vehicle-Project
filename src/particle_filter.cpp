@@ -24,7 +24,7 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
 	//   x, y, theta and their uncertainties from GPS) and all weights to 1. 
 	// Add random Gaussian noise to each particle.
 	// NOTE: Consult particle_filter.h for more information about this method (and others in this file).
-	num_particles = 50;
+	num_particles = 100;
 	best_particle_idx = -1;
 
 	// Create particles
@@ -208,9 +208,7 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 			continue;
 		}
 
-		// Transform observations from VEHICLE's coordinate system into the MAP's coordinate system
 		vector<LandmarkObs> observations_map(observations.size());
-		cout << "Number of observations: " << observations.size() << endl;
 		LandmarkObs obs_map;
 		for (unsigned int j=0; j<observations.size(); ++j) {
 			double x_obs = observations[j].x;
@@ -295,7 +293,6 @@ void ParticleFilter::resample() {
 		}
 	}
 
-	cout << "Best particle index: " << best_particle_idx << endl;
 	particles = new_particles;
 }
 
