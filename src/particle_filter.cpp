@@ -209,16 +209,17 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 		}
 
 		// Transform observations from VEHICLE's coordinate system into the MAP's coordinate system
-		vector<LandmarkObs> observations_map;
+		vector<LandmarkObs> observations_map(observations.size());
+		cout << "Number of observations: " << observations.size() << endl;
 		LandmarkObs obs_map;
-		for (auto& it : observations) {
-			double x_obs = it.x;
-			double y_obs = it.y;
+		for (unsigned int j=0; j<observations.size(); ++j) {
+			double x_obs = observations[j].x;
+			double y_obs = observations[j].y;
 
 			obs_map.x = cos(theta)*x_obs-sin(theta)*y_obs+x;
 			obs_map.y = sin(theta)*x_obs+cos(theta)*y_obs+y;
 
-			observations_map.push_back(obs_map);
+			observations_map[j] = obs_map;
 		}
 
 		// If the map-observation associations haven't been made, make the associations
@@ -294,6 +295,7 @@ void ParticleFilter::resample() {
 		}
 	}
 
+	cout << "Best particle index: " << best_particle_idx << endl;
 	particles = new_particles;
 }
 
