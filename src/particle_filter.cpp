@@ -24,7 +24,7 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
 	//   x, y, theta and their uncertainties from GPS) and all weights to 1. 
 	// Add random Gaussian noise to each particle.
 	// NOTE: Consult particle_filter.h for more information about this method (and others in this file).
-	num_particles = 100;
+	num_particles = 50;
 	best_particle_idx = -1;
 
 	// Create particles
@@ -85,44 +85,37 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
 	}
 }
 
-Particle ParticleFilter::dataAssociation(Particle particle,
-										 std::vector<LandmarkObs> predicted, 
-										 std::vector<LandmarkObs>& observations) {
+std::vector<int> ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, 
+												 std::vector<LandmarkObs>& observations) {
 	// TODO: Find the predicted measurement that is closest to each observed measurement and assign the 
 	//   observed measurement to this particular landmark.
 	// NOTE: this method will NOT be called by the grading code. But you will probably find it useful to 
 	//   implement this method and use it as a helper during the updateWeights phase.
 
+	vector<int> associations;
+	associations.resize(predicted.size(), -1);
+
 	// Make sure the predicted nor observations is not empty
 	if (predicted.size() == 0 || observations.size() == 0)
-		return particle;
+		return associations;
 
 	// Find the nearest landmark for each observation
-	vector<int> associations;
-	vector<double> sense_x;
-	vector<double> sense_y;
-
-	for (auto& it : predicted) {
-		associations.push_back(it.id);
-
-		double min_x = observations[0].x;
-		double min_y = observations[0].y;
-		double min_dist = dist(min_x, min_y, it.x, it.y);
+	for (unsigned int i=0; i<predicted.size(); ++i) {
+		double x = predicted[i].x;
+		double y = predicted[i].y;
+		double min_dist = dist(observations[0].x, observations[0].y, x, y);
+		int min_idx = 0;
 
 		for (unsigned int j=1; j<observations.size(); ++j) {
-			double new_dist = dist(observations[j].x, observations[j].y, it.x, it.y);
+			double new_dist = dist(observations[j].x, observations[j].y, x, y);
 			if (new_dist < min_dist) {
 				min_dist = new_dist;
-				min_x = observations[j].x;
-				min_y = observations[j].y;
+				min_idx = j;
 			}
 		}
-
-		sense_x.push_back(min_x);
-		sense_y.push_back(min_y);
+		associations[i] = min_idx;
 	}
-
-	return SetAssociations(particle, associations, sense_x, sense_y);
+	return associations;
 }
 
 void ParticleFilter::updateWeights(double sensor_range, double std_landmark[], 
@@ -142,7 +135,43 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 
 	// Map landmarks within range
 	vector<LandmarkObs> predicted_landmarks;
-	bool map_landmarks_found = false;
+	
+	// Associate observed landmarks to the possible map landmarks if 
+	// a sufficiently accurate localization has been made
+	vector<int> associations;
+
+	if (best_particle_idx != -1) {
+		double best_x = particles[best_particle_idx].x;
+		double best_y = particles[best_particle_idx].y;
+		double best_theta = particles[best_particle_idx].theta;
+	
+		// Find landmarks within sensor range
+		LandmarkObs landmark_map;
+		for (auto& it : map_landmarks.landmark_list) {
+			double distance = dist(best_x, best_y, it.x_f, it.y_f);
+			if (distance <= sensor_range) {
+				landmark_map.id = it.id_i;	
+				landmark_map.x = it.x_f;
+				landmark_map.y = it.y_f;
+				predicted_landmarks.push_back(landmark_map);
+			}
+		}
+
+		// Transform observations from VEHICLE's coordinate system into the MAP's coordinate system
+		vector<LandmarkObs> observations_map;
+		LandmarkObs obs_map;
+		for (auto& it : observations) {
+			double x_obs = it.x;
+			double y_obs = it.y;
+
+			obs_map.x = cos(best_theta)*x_obs-sin(best_theta)*y_obs+best_x;
+			obs_map.y = sin(best_theta)*x_obs+cos(best_theta)*y_obs+best_y;
+
+			observations_map.push_back(obs_map);
+		}
+
+		associations = dataAssociation(predicted_landmarks, observations_map);
+	}
 
 	double total_weight = 0.0;
 	for (unsigned int i=0; i<num_particles; ++i) {
@@ -151,20 +180,12 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 		double theta = particles[i].theta;
 
 		// Find all map landmarks that are within sensor_range
-		if (!map_landmarks_found || best_particle_idx == -1) {
+		if (best_particle_idx == -1) {
 			predicted_landmarks.clear();
 			LandmarkObs landmark_map;
-			double x_tmp, y_tmp;
-			if (best_particle_idx != -1) {
-				x_tmp = particles[best_particle_idx].x;
-				y_tmp = particles[best_particle_idx].y;
-				map_landmarks_found = true;
-			} else {
-				x_tmp = x;
-				y_tmp = y;
-			}
+
 			for (auto& it : map_landmarks.landmark_list) {
-				double distance = dist(x_tmp, y_tmp, it.x_f, it.y_f);
+				double distance = dist(x, y, it.x_f, it.y_f);
 				if (distance <= sensor_range) {
 					landmark_map.id = it.id_i;	
 					landmark_map.x = it.x_f;
@@ -200,19 +221,32 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 			observations_map.push_back(obs_map);
 		}
 
-		// Associate observed landmarks to the possible map landmarks
-		particles[i] = dataAssociation(particles[i], predicted_landmarks, observations_map);
+		// If the map-observation associations haven't been made, make the associations
+		if (best_particle_idx == -1)
+			associations = dataAssociation(predicted_landmarks, observations_map);
 
 		// Calculate weight for this particle
 		// In order to prevent arithmetic underflow, we convert the product to a sum of logarithms and exponentiate
+		// Also update the particle's association information
+		vector<int> association_ids(predicted_landmarks.size());
+		vector<double> sense_x(predicted_landmarks.size());
+		vector<double> sense_y(predicted_landmarks.size());
+
 		double log_weight = 0.0;
 		double log_denom = log(2.0*M_PI*std_x*std_y);
 		for (unsigned int j=0; j<predicted_landmarks.size(); ++j) {
-			double x_diff = predicted_landmarks[j].x-particles[i].sense_x[j];
-			double y_diff = predicted_landmarks[j].y-particles[i].sense_y[j];
+			double x_diff = predicted_landmarks[j].x-observations_map[associations[j]].x;
+			double y_diff = predicted_landmarks[j].y-observations_map[associations[j]].y;
 			double exponent = -x_diff*x_diff/(2*std_x*std_x)-y_diff*y_diff/(2*std_y*std_y);
 			log_weight += exponent-log_denom;
+
+			// Update particle
+			association_ids[j] = predicted_landmarks[j].id;
+			sense_x[j] = observations_map[associations[j]].x;
+			sense_y[j] = observations_map[associations[j]].y;
 		}
+		particles[i] = SetAssociations(particles[i], association_ids, sense_x, sense_y);
+
 		particles[i].weight = exp(log_weight);
 		weights[i] = exp(log_weight);
 		total_weight += exp(log_weight);
